@@ -1,55 +1,69 @@
 import sys
-from itertools import combinations
+
+def query(freq, k):
+    # freq: frequency array for attraction values (0~100)
+    # k: 선택해야 할 도시의 개수
+    total = 0
+    # 높은 관광지 개수부터 k개를 선택
+    for val in range(100, -1, -1):
+        if k <= 0:
+            break
+        if freq[val] <= k:
+            total += freq[val] * val
+            k -= freq[val]
+        else:
+            total += k * val
+            k = 0
+    return total
 
 def main():
     input = sys.stdin.readline
-    # 입력: 도시의 개수 n, 시작 도시 start, 휴가일수 d
     n, start, d = map(int, input().split())
+    # 서브태스크 2에서는 시작 도시가 항상 0임
     attractions = list(map(int, input().split()))
     
-    best = 0
-    # 도시 번호는 0부터 n-1
-    # 도시들을 집합 S로 고른다고 할 때, S에 대해 s(시작도시)를 방문 경로에 포함하지 않아도
-    # s에서 출발하여 S의 최소, 최대를 포함하는 구간 [L, R]를 방문하는 경로로 처리할 수 있다.
-    # (S가 연속하지 않더라도, 도시들은 직선 상에 있으므로 S의 "볼록 껍질"인 [L,R]를 방문하면 S의
-    #  도시들을 필요시에 관광할 수 있다.)
-    #
-    # 도시 [L, R]를 방문하는 최소 이동일수는 상황에 따라 달라지는데,
-    # - 만약 s가 [L,R] 밖에 있다면, s에서 가까운 쪽 끝까지 이동한 후 [L,R] 전체를 지나면 된다.
-    # - s가 [L,R] 내부에 있다면, 양쪽 끝 중 가까운 쪽부터 방문한 후 반대쪽 끝까지 가면 된다.
-    #
-    # 구체적으로, L = min(S), R = max(S)라 할 때,
-    # if s < L: travel = (R - L) + (L - s)
-    # if s > R: travel = (R - L) + (s - R)
-    # if s in [L,R]: travel = (R - L) + min(s - L, R - s)
-    #
-    # S에 포함된 도시들을 관광하는 데는 도시 하나당 1일씩 필요하므로 collection cost = |S|.
-    # 따라서 전체 필요한 일수 total_days = travel + |S| 가 d 이하여야 한다.
-    #
-    # S로 얻을 수 있는 이익은 sum( attractions[i] for i in S ) 이다.
-    #
-    # 모든 S (공집합 제외, 2^n - 1) 에 대해 위 조건을 확인하여 최대 이익을 구한다.
+    # R: furthest 방문 도시 (최소 비용을 위해 실제로 방문한 도시여야 함)
+    R_max = min(n - 1, d)  # R일의 이동비용이 d를 초과하면 안 됨
     
-    # n이 최대 20이므로 combinations를 사용하여 모든 부분집합(크기 1부터 n까지)을 열거한다.
-    for k in range(1, n+1):
-        # k개 도시를 고르는 모든 조합 (도시번호는 오름차순으로 정렬되어 나온다)
-        for subset in combinations(range(n), k):
-            # S의 구간: L, R
-            L = subset[0]
-            R = subset[-1]
-            # 총 관광지 개수 합
-            sum_val = sum(attractions[i] for i in subset)
-            # s와 구간 [L,R]의 관계에 따른 이동일수 계산
-            if start < L:
-                travel = (R - L) + (L - start)
-            elif start > R:
-                travel = (R - L) + (start - R)
+    # prefix[i] = attractions[0] + attractions[1] + ... + attractions[i]
+    prefix = [0] * (R_max + 1)
+    prefix[0] = attractions[0]
+    for i in range(1, R_max + 1):
+        prefix[i] = prefix[i - 1] + attractions[i]
+    
+    ans = 0
+    # 0~R-1 도시들에 대한 frequency distribution (관광지 개수: 0~100)
+    freq = [0] * 101
+
+    # R = 0일 때 처리:
+    # 방문 가능 일수 = d - 0 = d. d>=1이므로 전체 도시(단 0번 도시) 방문
+    if d >= 1:
+        ans = attractions[0]
+    
+    # R=0 이미 처리했으므로 freq 업데이트
+    freq[attractions[0]] += 1
+
+    # R=1부터 R_max까지 반복
+    for R in range(1, R_max + 1):
+        visiting_days = d - R  # 이동비용 R일 + 방문일수 = d
+        if visiting_days <= 0:
+            # 방문할 날이 없으면 건너뜀
+            pass
+        else:
+            if visiting_days >= R + 1:
+                # 0번부터 R번 도시 모두 방문 가능
+                candidate = prefix[R]
             else:
-                travel = (R - L) + min(start - L, R - start)
-            total_days = travel + k  # 이동일수 + 관광(방문)일수
-            if total_days <= d:
-                best = max(best, sum_val)
-    print(best)
-    
+                # 반드시 R번 도시는 방문해야 하므로 남은 (visiting_days - 1)일에 대해
+                # 0~R-1 도시들 중 관광지 합이 최대가 되도록 선택
+                k = visiting_days - 1
+                candidate = attractions[R] + query(freq, k)
+            if candidate > ans:
+                ans = candidate
+        # 다음 R에 대비하여 현재 도시 R를 frequency에 추가
+        freq[attractions[R]] += 1
+
+    print(ans)
+
 if __name__ == '__main__':
     main()
