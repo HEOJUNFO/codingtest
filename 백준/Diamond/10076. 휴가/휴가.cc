@@ -1,273 +1,190 @@
 #include <bits/stdc++.h>
 using namespace std;
  
-// ----- Persistent Segment Tree for “top-k” queries -----
-//
-// We will build a persistent segment tree over the array of city attraction values.
-// (The idea is: given any contiguous subarray of cities we “pass by”, we want to answer
-// “if you can only spend X days visiting (and must choose the X best cities in that segment),
-// what is the maximum total attraction sum?”)
-// 
-// The tree is built over the (compressed) values. In each node we store the number
-// of items (cnt) and the sum of the actual values (sum) in that node’s range.
-
+// --- Persistent Segment Tree ---
+// 이 구조체는 한 노드의 정보를 저장합니다.
 struct Node {
-    int l, r; // indices of left and right child in segtree vector
-    int cnt;  // number of elements in this segment
-    long long sum; // sum of values in this segment
+    int left, right; // 자식 노드 인덱스
+    int cnt;         // 이 구간에 포함된 원소의 개수
+    long long sum;   // 이 구간의 원소들의 합
 };
  
-// We'll store all nodes in a global vector.
-vector<Node> segtree;
+// 전역 상수 및 배열 (최대 노드 수는 대략 n*log(n) 정도로 잡음)
+const int MAX_NODES = 2200000;
+Node seg[MAX_NODES];
+int segSize = 1; // 0번 노드를 null node로 사용하고, 실제 노드는 1번부터
  
-// Global vector of persistent tree roots for prefixes.
-vector<int> rootP;
+// 전역 변수 (압축된 값 목록)
+int m; // 압축된 값의 개수
+vector<long long> compVals; // compVals[i] : i번째로 작은 원래 값
  
-// Global vector of distinct sorted attraction values (for coordinate–compression).
-vector<long long> compVals;
- 
-// Create a new node and return its index.
-int newNode(int l, int r, int cnt, long long sum) {
-    Node nd; nd.l = l; nd.r = r; nd.cnt = cnt; nd.sum = sum;
-    segtree.push_back(nd);
-    return (int)segtree.size()-1;
+// 새 노드를 만들어 반환합니다.
+int newNode(int left, int right, int cnt, long long sum) {
+    int idx = segSize++;
+    seg[idx].left = left;
+    seg[idx].right = right;
+    seg[idx].cnt = cnt;
+    seg[idx].sum = sum;
+    return idx;
 }
  
-// Build an empty segment tree over the index range [L, R] (L=0, R=m–1).
-int buildTree(int L, int R) {
-    if(L == R) return newNode(-1, -1, 0, 0);
-    int mid = (L + R) / 2;
-    int leftChild = buildTree(L, mid);
-    int rightChild = buildTree(mid+1, R);
-    return newNode(leftChild, rightChild, 0, 0);
-}
- 
-// Update the persistent tree “prev” by inserting an occurrence of value ‘val’
-// at the (compressed) position pos. Returns the new root.
-int updateTree(int prev, int L, int R, int pos, long long val) {
-    if(L > pos || R < pos) return prev;
-    if(L == R){
-        int newcnt = segtree[prev].cnt + 1;
-        long long newsum = segtree[prev].sum + val;
-        return newNode(-1, -1, newcnt, newsum);
+// persistent segment tree의 update 함수 
+// prev: 이전 버전의 root, pos: 압축된 인덱스, val: 원래 값
+// 구간 [L, R] 내에서 update합니다.
+int update(int prev, int pos, long long val, int L, int R) {
+    int curr = newNode(0, 0, 0, 0);
+    if(L == R) {
+        seg[curr].cnt = seg[prev].cnt + 1;
+        seg[curr].sum = seg[prev].sum + val;
+        return curr;
     }
     int mid = (L + R) / 2;
-    int leftChild, rightChild;
-    if(pos <= mid)
-        leftChild = updateTree(segtree[prev].l, L, mid, pos, val);
-    else
-        leftChild = segtree[prev].l;
-    if(pos > mid)
-        rightChild = updateTree(segtree[prev].r, mid+1, R, pos, val);
-    else
-        rightChild = segtree[prev].r;
-    int newcnt = segtree[leftChild].cnt + segtree[rightChild].cnt;
-    long long newsum = segtree[leftChild].sum + segtree[rightChild].sum;
-    return newNode(leftChild, rightChild, newcnt, newsum);
+    if(pos <= mid) {
+        int newLeft = update(seg[prev].left, pos, val, L, mid);
+        seg[curr].left = newLeft;
+        seg[curr].right = seg[prev].right;
+    } else {
+        int newRight = update(seg[prev].right, pos, val, mid+1, R);
+        seg[curr].right = newRight;
+        seg[curr].left = seg[prev].left;
+    }
+    seg[curr].cnt = seg[ seg[curr].left ].cnt + seg[ seg[curr].right ].cnt;
+    seg[curr].sum = seg[ seg[curr].left ].sum + seg[ seg[curr].right ].sum;
+    return curr;
 }
  
-// Query function: given two persistent tree nodes (u and v) representing the difference
-// between the tree for prefix up to index R and prefix up to index L–1,
-// return the sum of the top k largest values (largest = highest actual number) in the range.
-// (Since the tree is built over the sorted values in increasing order, “largest” means from the right.)
- 
-long long queryTopK(int u, int v, int L, int R, int k) {
+// --- Query : "k largest" 합 구하기 ---
+// u, v: persistent segment tree의 두 버전 (구간 차분용)
+// 구간 [L,R] (압축값 범위) 에서 k개의 가장 큰 원소의 합을 구합니다.
+long long queryK (int u, int v, int k, int L, int R) {
     if(k <= 0) return 0;
-    if(L == R){
-        int cntDiff = segtree[v].cnt - segtree[u].cnt;
-        int take = min(k, cntDiff);
-        return (long long)take * compVals[L];
+    if(L == R) {
+        // 해당 leaf의 원래 값은 compVals[L]
+        return (long long) k * compVals[L];
     }
     int mid = (L + R) / 2;
-    int cntRight = segtree[ segtree[v].r ].cnt - segtree[ segtree[u].r ].cnt;
+    // 오른쪽 자식 구간 ([mid+1, R])의 원소 개수부터 가져옵니다.
+    int cntRight = seg[ seg[u].right ].cnt - seg[ seg[v].right ].cnt;
     if(cntRight >= k)
-        return queryTopK(segtree[u].r, segtree[v].r, mid+1, R, k);
+        return queryK(seg[u].right, seg[v].right, k, mid+1, R);
     else {
-        long long sumRight = segtree[ segtree[v].r ].sum - segtree[ segtree[u].r ].sum;
-        return sumRight + queryTopK(segtree[u].l, segtree[v].l, L, mid, k - cntRight);
+        long long sumRight = seg[ seg[u].right ].sum - seg[ seg[v].right ].sum;
+        int rem = k - cntRight;
+        long long sumLeft = queryK(seg[u].left, seg[v].left, rem, L, mid);
+        return sumRight + sumLeft;
     }
 }
  
-// Given query range [ql, qr] (0-indexed) in the original array,
-// return the sum of the top k elements.
-long long queryRangeTopK(int ql, int qr, int k) {
-    return queryTopK(rootP[ql], rootP[qr+1], 0, (int)compVals.size()-1, k);
+// 주어진 persistent tree (roots 배열 이용) 에서 구간 [l, r]의 k largest 합을 구합니다.
+long long queryInterval(int l, int r, int k, const vector<int>& roots) {
+    if(k <= 0) return 0;
+    int u = roots[r];
+    int v = (l > 0 ? roots[l-1] : 0);
+    return queryK(u, v, k, 0, m-1);
 }
  
-// ----- End persistent segtree functions -----
+// --- Main ---
  
-// Global variables for the problem.
+// 전역 입력 변수
 int n, start;
 long long d;
-vector<long long> A;          // A[i]: number of attractions in city i.
-vector<long long> prefixSum;  // For full–sum queries on contiguous segments.
  
-// Precompute prefix sums of A.
-void computePrefixSum() {
-    prefixSum.resize(n);
-    prefixSum[0] = A[0];
-    for (int i = 1; i < n; i++)
-        prefixSum[i] = prefixSum[i-1] + A[i];
-}
- 
-// Return full sum of A[L..R] (inclusive).
-long long rangeFullSum(int L, int R) {
-    if(L > R) return 0;
-    return prefixSum[R] - (L == 0 ? 0 : prefixSum[L-1]);
-}
- 
-// --- “Route simulation” functions ---
-//
-// We imagine that during the vacation the traveler (starting at city “start”)
-// may “extend” his route a steps to the left and b steps to the right (so that
-// the segment covered is [start–a, start+b]). In that segment there are S = a+b+1 cities.
-// Each “visit” day (when the traveler collects attractions) must be assigned
-// to one city from this set. However, the traveler does not have enough days;
-// he must “choose” only some of them. (Movement days are forced.)
-// 
-// If he “travels” so that the farthest left city is reached (distance a) and farthest right (distance b),
-// then depending on the order he uses one of two movement–cost formulas:
-//  • If a ≤ b (we use “left–first” order) the movement cost is: M = 2*a + b.
-//  • If a > b  (use “right–first” order) the cost is: M = 2*b + a.
-// 
-// Then the number of days left for “visiting” is (d – M). (If negative, the route is not feasible.)
-// He can visit at most min(d – M, S) cities from the available S.
-// Since all attraction counts are nonnegative, if (d – M) ≥ S he simply “visits all”.
-// Otherwise he should choose the (d – M) cities having the highest attraction values.
-// (The persistent segtree query “queryRangeTopK” does exactly that.)
-// 
-// The following two functions return the maximum total attractions collected
-// when the segment [start–a, start+b] is “traversed” under the two orders.
- 
-// Case A: a ≤ b. (Left-first order; movement cost M = 2*a + b.)
-long long getValueA(int a, int b, int globalStart, long long globalD) {
-    int Lidx = globalStart - a;
-    int Ridx = globalStart + b;
-    int S = a + b + 1;
-    int M = 2 * a + b; // movement cost
-    long long allowed = globalD - M; // days available for visits
-    if(allowed < 0) return -1; // not feasible
-    if(allowed >= S)
-        return rangeFullSum(Lidx, Ridx);
-    else
-        return queryRangeTopK(Lidx, Ridx, (int)allowed);
-}
- 
-// Case B: a > b. (Right-first order; movement cost M = 2*b + a.)
-long long getValueB(int a, int b, int globalStart, long long globalD) {
-    int Lidx = globalStart - a;
-    int Ridx = globalStart + b;
-    int S = a + b + 1;
-    int M = 2 * b + a;
-    long long allowed = globalD - M;
-    if(allowed < 0) return -1;
-    if(allowed >= S)
-        return rangeFullSum(Lidx, Ridx);
-    else
-        return queryRangeTopK(Lidx, Ridx, (int)allowed);
-}
- 
-// ----- Ternary search on integer domain -----
-//
-// Given an integer domain [lo, hi] and a function f(int),
-// we perform a ternary search (assuming f is unimodal)
-// and return the maximum value of f on [lo, hi].
-template <typename Func>
-long long ternarySearchInt(int lo, int hi, Func f) {
-    if(lo > hi) return -1;
-    while(hi - lo > 5) {
-        int m1 = lo + (hi - lo) / 3;
-        int m2 = hi - (hi - lo) / 3;
-        long long f1 = f(m1), f2 = f(m2);
-        if(f1 < f2)
-            lo = m1 + 1;
-        else
-            hi = m2 - 1;
-    }
-    long long best = -1;
-    for (int i = lo; i <= hi; i++){
-        best = max(best, f(i));
-    }
-    return best;
-}
- 
-// ----- Main -----
-//
-// We “simulate” the possible segments that include the starting city.
-// Let a = how many cities to the left (distance) and b = how many to the right.
-// (Then the segment is [start–a, start+b].)
-// We then split the cases by the order:
-//   • When a ≤ b, we use getValueA (movement cost = 2*a+b).
-//   • When a > b, we use getValueB (movement cost = 2*b+a).
-// For each possible left extension a (0 ≤ a ≤ start) we determine the feasible range of b:
-//   For case A: we require a ≤ b ≤ min(Rmax, d – 2*a)   [since d – (2*a+b) must be ≥ 0]
-//   For case B: if a > 0, then 0 ≤ b ≤ min(a–1, Rmax, d–a)
-// Then for each we “optimize” (by ternary search) over b.
+// travelCost : 구간 [L,R] (L ≤ start ≤ R)에 대해
+// 이동 비용 = (R - L) + min(start - L, R - start)
  
 int main(){
     ios::sync_with_stdio(false);
     cin.tie(nullptr);
  
     cin >> n >> start >> d;
-    A.resize(n);
-    for (int i = 0; i < n; i++){
+    vector<long long> A(n);
+    for (int i=0; i<n; i++){
         cin >> A[i];
     }
-    computePrefixSum();
  
-    // Build persistent segment tree.
-    // First, compress A.
-    compVals = A;
-    sort(compVals.begin(), compVals.end());
-    compVals.erase(unique(compVals.begin(), compVals.end()), compVals.end());
-    int mComp = compVals.size();
+    // 좌표 압축
+    vector<long long> temp = A;
+    sort(temp.begin(), temp.end());
+    temp.erase(unique(temp.begin(), temp.end()), temp.end());
+    m = temp.size();
+    compVals = temp;
  
-    // Reserve space for segtree nodes.
-    segtree.reserve((n+5) * (int)(ceil(log2(mComp)) + 5));
-    int emptyRoot = buildTree(0, mComp-1);
-    rootP.resize(n+1);
-    rootP[0] = emptyRoot;
-    for (int i = 0; i < n; i++){
-        int pos = (int)(std::lower_bound(compVals.begin(), compVals.end(), A[i]) - compVals.begin());
-        int newRoot = updateTree(rootP[i], 0, mComp-1, pos, A[i]);
-        rootP[i+1] = newRoot;
+    // persistent segment tree의 null node (인덱스 0) 초기화
+    seg[0].left = seg[0].right = 0;
+    seg[0].cnt = 0;
+    seg[0].sum = 0;
+ 
+    // roots[i] : A[0..i]를 반영한 persistent tree의 root
+    vector<int> roots(n, 0);
+    int pos = int(lower_bound(compVals.begin(), compVals.end(), A[0]) - compVals.begin());
+    roots[0] = update(0, pos, A[0], 0, m-1);
+    for (int i=1; i<n; i++){
+        int pos = int(lower_bound(compVals.begin(), compVals.end(), A[i]) - compVals.begin());
+        roots[i] = update(roots[i-1], pos, A[i], 0, m-1);
     }
+ 
+    // 람다: 구간 [L,R] (0 ≤ L ≤ start ≤ R < n) 에 대한 이동 비용 T = (R - L) + min(start - L, R - start)
+    auto travelCost = [&](int L, int R) -> long long {
+        long long diff = R - L;
+        long long leftDist = start - L;
+        long long rightDist = R - start;
+        return diff + min(leftDist, rightDist);
+    };
  
     long long ans = 0;
-    // Let a = (start - L) [extension to the left] and
-    //     b = (R - start) [extension to the right].
-    int Lmax = start;              // maximum possible left extension
-    int Rmax = n - 1 - start;        // maximum possible right extension
- 
-    // Iterate over possible left extensions a.
-    for (int a = 0; a <= Lmax; a++){
-        // --- Case A: a <= b, so require a <= b <= min(Rmax, d - 2*a) ---
-        if(a <= Rmax) {
-            int lo = a;
-            int hi = min(Rmax, (int)d - 2*a); // because we need d - (2*a + b) >= 0
-            if(lo <= hi){
-                auto fA = [a, start](int b) -> long long {
-                    return getValueA(a, b, start, d);
-                };
-                long long bestA = ternarySearchInt(lo, hi, fA);
-                ans = max(ans, bestA);
-            }
-        }
-        // --- Case B: a > b (so a must be at least 1) ---
-        if(a > 0) {
-            int lo = 0;
-            int hi = min({a - 1, Rmax, (int)d - a});
-            if(lo <= hi){
-                auto fB = [a, start](int b) -> long long {
-                    return getValueB(a, b, start, d);
-                };
-                long long bestB = ternarySearchInt(lo, hi, fB);
-                ans = max(ans, bestB);
-            }
-        }
-    }
-    // Also, ensure the trivial segment [start,start] is considered.
+    // (특별히) 아무 이동도 없이 start 도시만 방문하는 경우
     ans = max(ans, A[start]);
+ 
+    // [L,R] 구간이 start를 포함하고, T(L,R) <= d인 극단적 후보 구간들을 고려합니다.
+    // 1) "좌측 확장" : L을 0부터 start까지 변화시키고, 이분검색으로 R (최대 feasible R)을 찾습니다.
+    for (int L = 0; L <= start; L++){
+        int lo = start, hi = n-1;
+        int bestR = -1;
+        while(lo <= hi){
+            int mid = (lo + hi) / 2;
+            long long cost = travelCost(L, mid);
+            if(cost <= d){
+                bestR = mid;
+                lo = mid + 1;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        if(bestR == -1) continue;
+        int R = bestR;
+        int blockLength = R - L + 1;
+        long long cost = travelCost(L, R);
+        long long avail = d - cost; // 남은 방문할 수 있는 날들
+        int visits = (int) min((long long)blockLength, avail);
+        if(visits <= 0) continue;
+        long long cand = queryInterval(L, R, visits, roots);
+        ans = max(ans, cand);
+    }
+ 
+    // 2) "우측 확장" : R을 start부터 n-1까지 변화시키고, 이분검색으로 L (최소 feasible L)을 찾습니다.
+    for (int R = start; R < n; R++){
+        int lo = 0, hi = start;
+        int bestL = -1;
+        while(lo <= hi){
+            int mid = (lo + hi) / 2;
+            long long cost = travelCost(mid, R);
+            if(cost <= d){
+                bestL = mid;
+                hi = mid - 1;
+            } else {
+                lo = mid + 1;
+            }
+        }
+        if(bestL == -1) continue;
+        int L = bestL;
+        int blockLength = R - L + 1;
+        long long cost = travelCost(L, R);
+        long long avail = d - cost;
+        int visits = (int) min((long long)blockLength, avail);
+        if(visits <= 0) continue;
+        long long cand = queryInterval(L, R, visits, roots);
+        ans = max(ans, cand);
+    }
  
     cout << ans << "\n";
     return 0;
